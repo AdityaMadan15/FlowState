@@ -1,0 +1,15 @@
+﻿.env
+**/.env
+node_modules/
+**/node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/coverage/
+contracts/typechain-types/
+venv/
+.venv/
+**/venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+backend/models/*.joblib
