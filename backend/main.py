@@ -16,6 +16,18 @@ from fastapi.middleware.cors import CORSMiddleware
 try:  # Support both `uvicorn main:app` from backend/ and `backend.main:app`.
     from .blockchain import chain_connected, trigger_payout
     from .config import DEMO_DAY_OF_WEEK, PAYOUT_INR, SCENARIOS, WORKERS
+    from .database import (
+        apply_loan,
+        database_connected,
+        get_ledger,
+        get_paid_flags,
+        get_scenario,
+        initialize_database,
+        list_payouts,
+        record_payout,
+        reset_database,
+        set_scenario as persist_scenario,
+    )
     from .decision import decide_action
     from .train_model import (
         FEATURES,
@@ -27,6 +39,18 @@ try:  # Support both `uvicorn main:app` from backend/ and `backend.main:app`.
 except ImportError:
     from blockchain import chain_connected, trigger_payout
     from config import DEMO_DAY_OF_WEEK, PAYOUT_INR, SCENARIOS, WORKERS
+    from database import (
+        apply_loan,
+        database_connected,
+        get_ledger,
+        get_paid_flags,
+        get_scenario,
+        initialize_database,
+        list_payouts,
+        record_payout,
+        reset_database,
+        set_scenario as persist_scenario,
+    )
     from decision import decide_action
     from train_model import (
         FEATURES,
@@ -46,22 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATE_LOCK = threading.Lock()
 ACTION_LOCK = threading.Lock()
-STATE: dict[str, Any] = {
-    "scenario": "clear",
-    "ledger": {
-        worker["worker_id"]: {
-            "balance_inr": 1200,
-            "vault_inr": 300,
-            "loan_outstanding_inr": 0,
-            "paid": False,
-            "last_payout_tx": None,
-        }
-        for worker in WORKERS
-    },
-    "payout_log": [],
-}
 
 MODEL: Any | None = None
 EXPLAINER: Any | None = None
@@ -82,6 +91,7 @@ def load_model_assets() -> None:
 
 @app.on_event("startup")
 def startup() -> None:
+    initialize_database()
     load_model_assets()
 
 
@@ -94,8 +104,7 @@ def _worker_config(worker_id: int) -> dict[str, Any]:
 
 def _worker_response(worker_id: int) -> dict[str, Any]:
     worker = _worker_config(worker_id)
-    with STATE_LOCK:
-        ledger = dict(STATE["ledger"][worker_id])
+    ledger = get_ledger(worker_id)
     return {
         "worker_id": worker_id,
         "name": worker["name"],
@@ -187,19 +196,6 @@ def _predict(worker: dict[str, Any], scenario: str) -> dict[str, Any]:
     }
 
 
-def _starting_ledger() -> dict[int, dict[str, Any]]:
-    return {
-        worker["worker_id"]: {
-            "balance_inr": 1200,
-            "vault_inr": 300,
-            "loan_outstanding_inr": 0,
-            "paid": False,
-            "last_payout_tx": None,
-        }
-        for worker in WORKERS
-    }
-
-
 def _openweather() -> dict[str, Any]:
     """Return current Mumbai weather and mapped AQI, or raise for scenario fallback."""
     import os
@@ -227,28 +223,25 @@ def _openweather() -> dict[str, Any]:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    with STATE_LOCK:
-        scenario = STATE["scenario"]
+    db_ok = database_connected()
+    scenario = get_scenario() if db_ok else "unavailable"
     try:
         connected = chain_connected()
     except Exception:
         logger.exception("Chain health check failed")
         connected = False
     return {
-        "status": "ok",
+        "status": "ok" if db_ok else "degraded",
         "scenario": scenario,
         "chain_connected": connected,
         "model_loaded": MODEL is not None and EXPLAINER is not None,
+        "database_connected": db_ok,
     }
 
 
 @app.get("/api/workers")
 def workers() -> list[dict[str, Any]]:
-    with STATE_LOCK:
-        paid = {
-            worker_id: ledger["paid"]
-            for worker_id, ledger in STATE["ledger"].items()
-        }
+    paid = get_paid_flags()
     return [
         {
             "worker_id": worker["worker_id"],
@@ -270,8 +263,7 @@ def worker(worker_id: int) -> dict[str, Any]:
 @app.get("/api/predict/{worker_id}")
 def predict(worker_id: int) -> dict[str, Any]:
     worker_data = _worker_config(worker_id)
-    with STATE_LOCK:
-        scenario = STATE["scenario"]
+    scenario = get_scenario()
     return _predict(worker_data, scenario)
 
 
@@ -279,14 +271,12 @@ def predict(worker_id: int) -> dict[str, Any]:
 def simulate_storm() -> dict[str, Any]:
     # Real: local-chain contract calls. Simulated: INR ledger and pool accounting.
     with ACTION_LOCK:
-        with STATE_LOCK:
-            STATE["scenario"] = "storm"
+        persist_scenario("storm")
         new_payouts = []
         for worker_data in WORKERS:
             worker_id = worker_data["worker_id"]
-            with STATE_LOCK:
-                if STATE["ledger"][worker_id]["paid"]:
-                    continue
+            if get_ledger(worker_id)["paid"]:
+                continue
             tx_hash, mock = trigger_payout(worker_data["address"])
             payout = {
                 "worker_id": worker_id,
@@ -296,13 +286,8 @@ def simulate_storm() -> dict[str, Any]:
                 "amount": PAYOUT_INR,
                 "mock": mock,
             }
-            with STATE_LOCK:
-                ledger = STATE["ledger"][worker_id]
-                ledger["balance_inr"] += PAYOUT_INR
-                ledger["paid"] = True
-                ledger["last_payout_tx"] = tx_hash
-                STATE["payout_log"].append(payout)
-                new_payouts.append(payout)
+            record_payout(payout)
+            new_payouts.append(payout)
         return {
             "status": "success",
             "payouts_triggered": len(new_payouts),
@@ -313,27 +298,22 @@ def simulate_storm() -> dict[str, Any]:
 
 @app.get("/api/payouts")
 def payouts() -> list[dict[str, Any]]:
-    with STATE_LOCK:
-        return list(reversed([dict(item) for item in STATE["payout_log"]]))
+    return list_payouts()
 
 
 @app.post("/api/loan/accept/{worker_id}")
 def accept_loan(worker_id: int) -> dict[str, Any]:
     worker_data = _worker_config(worker_id)
     with ACTION_LOCK:
-        with STATE_LOCK:
-            scenario = STATE["scenario"]
-            outstanding = STATE["ledger"][worker_id]["loan_outstanding_inr"]
+        scenario = get_scenario()
+        outstanding = get_ledger(worker_id)["loan_outstanding_inr"]
         action = _predict(worker_data, scenario)
         if outstanding != 0:
             raise HTTPException(status_code=400, detail="Worker already has an outstanding loan")
         if action["action"] != "OFFER_LOAN":
             raise HTTPException(status_code=400, detail="Worker is not currently eligible for a loan")
         amount = int(action["loan_amount"])
-        with STATE_LOCK:
-            ledger = STATE["ledger"][worker_id]
-            ledger["balance_inr"] += amount
-            ledger["loan_outstanding_inr"] = amount
+        apply_loan(worker_id, amount)
     return _worker_response(worker_id)
 
 
@@ -341,17 +321,15 @@ def accept_loan(worker_id: int) -> dict[str, Any]:
 def set_scenario(name: str) -> dict[str, str]:
     if name not in ("clear", "rainy"):
         raise HTTPException(status_code=400, detail="Scenario must be 'clear' or 'rainy'")
-    with ACTION_LOCK, STATE_LOCK:
-        STATE["scenario"] = name
+    with ACTION_LOCK:
+        persist_scenario(name)
     return {"status": "ok", "scenario": name}
 
 
 @app.post("/api/reset")
 def reset() -> dict[str, str]:
-    with ACTION_LOCK, STATE_LOCK:
-        STATE["scenario"] = "clear"
-        STATE["payout_log"] = []
-        STATE["ledger"] = _starting_ledger()
+    with ACTION_LOCK:
+        reset_database()
     return {"status": "reset"}
 
 
@@ -361,6 +339,5 @@ def weather() -> dict[str, Any]:
         return _openweather()
     except Exception:
         logger.exception("Live weather unavailable; returning scenario weather")
-    with STATE_LOCK:
-        scenario = STATE["scenario"]
+    scenario = get_scenario()
     return {"source": "scenario", **SCENARIOS[scenario]}

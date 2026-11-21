@@ -19,7 +19,17 @@ py -3.11 -m venv venv
 Copy-Item .env.example .env
 ```
 
-Edit `backend/.env` and set `RPC_URL=http://127.0.0.1:8545` and `PRIVATE_KEY` to the local Hardhat account #0 key shown in the node terminal. Keep `.env` private and out of Git. `OPENWEATHER_API_KEY` is optional. Train the model once if `backend/models/model.joblib` and `explainer.joblib` are absent:
+Edit `backend/.env` and set `RPC_URL=http://127.0.0.1:8545`, `PRIVATE_KEY` to the local Hardhat account #0 key shown in the node terminal, and `DATABASE_URL` to your local PostgreSQL connection string. Keep `.env` private and out of Git. `OPENWEATHER_API_KEY` is optional.
+
+PostgreSQL must be installed and running locally. Create a database named `flowstate` (for example, in SQL Shell / psql):
+
+```sql
+CREATE DATABASE flowstate;
+```
+
+Set `DATABASE_URL` in `backend/.env` using the PostgreSQL username, password, host, port, and database. For the default local PostgreSQL account, the format is `postgresql+psycopg://postgres:YOUR_POSTGRES_PASSWORD@127.0.0.1:5432/flowstate`. URL-encode special characters in the password. The pinned Python dependencies are installed with the pip command above. On startup the backend creates its demo tables and seeds any missing worker rows.
+
+Train the model once if `backend/models/model.joblib` and `explainer.joblib` are absent:
 
 ```powershell
 .\venv\Scripts\python.exe train_model.py
@@ -60,10 +70,10 @@ All response examples below are JSON. Amounts in `*_inr`, `amount`, and `loan_am
 ### `GET /api/health`
 
 ```json
-{"status":"ok","scenario":"clear","chain_connected":true,"model_loaded":true}
+{"status":"ok","scenario":"clear","chain_connected":true,"model_loaded":true,"database_connected":true}
 ```
 
-`chain_connected` reports whether the configured RPC answers. `model_loaded` reports whether both model and SHAP assets loaded.
+`chain_connected` reports whether the configured RPC answers. `model_loaded` reports whether both model and SHAP assets loaded. `database_connected` reports whether PostgreSQL answers.
 
 ### `GET /api/workers`
 
@@ -163,7 +173,8 @@ To show the loan flow, reset, call `POST /api/scenario/rainy`, read `/api/predic
 
 ## Known limits
 
-- The ledger, scenario, and payout log live in memory. Restarting the backend clears them; `/api/reset` restores the initial values without restarting.
+- The scenario, INR ledger, and payout log are stored in PostgreSQL and survive backend restarts. `/api/reset` clears payout history and restores the initial demo values.
+- For this MVP, SQLAlchemy creates tables at startup; there is no Alembic migration history yet. Back up the database before changing table definitions.
 - The local Hardhat chain is ephemeral. Restarting its node requires redeploying the contract and restarting the backend if it is already serving requests.
 - If the chain, contract, signing key, or RPC is unavailable, payout calls return mock hashes and still update the simulated INR ledger. Check `mock` on each payout.
 - Worker earnings, weather scenarios, balances, vaults, funding pool accounting, and loan repayment are demo simulations. There is no real bank/UPI transfer, KYC, or loan repayment flow.
