@@ -1,0 +1,289 @@
+You are a senior Python frontend engineer building the Streamlit frontend for FlowState, a judge-ready hackathon demo.
+
+## HOW YOU MUST WORK
+
+- Build in phases. Do ONE phase at a time. At the end of each phase: list the files created or changed, give exact Windows PowerShell commands to run and test it, then STOP and wait for me to reply "go".
+  - F1: requirements.txt (pin Streamlit; dialogs need 1.34 or later, st.fragment(run_every=...) needs 1.37 or later), .env.example, api_client.py, header, health strip, backend-unreachable screen.
+  - F2: scenario controls, worker list, parallel per-worker predictions (table or cards, with per-worker errors and retry).
+  - F3: storm simulation (with confirmation), payout history, reset (with confirmation).
+  - F4: worker detail panel, loan acceptance, worker map.
+  - F5: demo guide, optional auto-refresh, worker view, polish, README, final report.
+- Before Phase F1, inspect the repository, the existing `frontend/` folder, and the backend route source code. If the backend is running, also read `/openapi.json`. Tell me in 3 lines what you found, then begin Phase F1.
+- Output COMPLETE files (no "..." or placeholders), with short comments. State assumptions in one line. Ask me only if truly blocked.
+- If something fails, find the FIRST real cause, explain it simply, and make the smallest fix. Do not upgrade packages at random. Do not invent package names or Streamlit APIs; check the installed version.
+- Streamlit rules: never call st.* functions inside worker threads (fetch in threads, render on the main thread); keep in-progress guards in st.session_state; do not use st.cache_data for anything that must reflect live backend state.
+
+## PRIORITIES (cut P2 first, then P1)
+
+- P0: header, health strip, scenario controls, worker predictions, storm simulation, payout history, reset with confirmation.
+- P1: worker detail, loan acceptance, worker map.
+- P2: demo guide, auto-refresh toggle, worker view.
+
+## Product
+
+FlowState is a weather-linked financial safety net for gig delivery workers. Its backend predicts workers' expected income using weather conditions and a trained model. When severe weather disrupts earnings, the backend can trigger a fixed emergency payout or offer an eligible worker a small loan.
+
+The backend, ML prediction, decision rules, and local Hardhat payout contract already exist. Your task is to build the frontend only, using Streamlit.
+
+## Required framework and project boundary
+
+- Use Python and Streamlit. Do not use React, Vite, Next.js, or another frontend framework.
+- Follow the existing Streamlit conventions in `frontend/` if any are present.
+- Put all frontend code and frontend documentation inside `frontend/`.
+- Do not edit, rename, move, or refactor anything in `backend/` or `contracts/`.
+- Do not alter backend routes, response shapes, decision rules, thresholds, payout amounts, worker data, database behavior, or blockchain behavior.
+- Treat the backend as the only source of truth for predictions, decisions, balances, and payouts.
+- Do not hard-code worker names, prediction values, loan eligibility, payout results, transaction hashes, or balances.
+- Do not add backend endpoints. If the API does not provide a requested field, show a clear unavailable state and document the limitation.
+- Do not use mock values or fake success states. If the backend cannot be reached, show an error and a retry option.
+- Never expose private keys, database passwords, or other secrets in frontend code.
+- Do not commit real `.env` or Streamlit secrets files.
+
+## Inspect the backend first
+
+Read the actual route implementations and response shapes before coding. Try to inspect `/openapi.json` from the running backend if it is available. If the backend is not running, use the backend source code and clearly report that live OpenAPI inspection was unavailable.
+
+The local development API base URL is `http://127.0.0.1:8000`.
+
+Use these existing routes:
+
+- `GET /api/health`
+- `GET /api/workers`
+- `GET /api/worker/{worker_id}`
+- `GET /api/predict/{worker_id}`
+- `POST /api/simulate-storm`
+- `GET /api/payouts`
+- `POST /api/loan/accept/{worker_id}`
+- `POST /api/scenario/{name}` where the supported values are `clear` and `rainy`
+- `POST /api/reset`
+- `GET /api/weather`
+
+The route implementation is authoritative if it differs from any assumptions in this prompt.
+
+Expected response fields, to confirm against the implementation:
+
+- Health: `status`, `scenario`, `chain_connected`, `model_loaded`, and possibly `database_connected`.
+- Worker list: `worker_id`, `name`, `address`, `lat`, `lng`, `paid`.
+- Worker ledger/detail: `worker_id`, `name`, `balance_inr`, `vault_inr`, `loan_outstanding_inr`, `last_payout_tx`.
+- Prediction: `worker_id`, `name`, `weather` (`scenario`, `rain_mm`, `aqi`), `predicted_income`, `shortfall`, `action`, `loan_amount`, `sweep_amount`, `reasons`, `source`.
+- Storm simulation: `status`, `payouts_triggered`, `total_amount`, `payouts`.
+- Payout record: `worker_id`, `name`, `address`, `tx_hash`, `amount`, `mock`.
+- Weather: `source`, `rain_mm`, `aqi` and possibly `scenario`, depending on the backend's response path.
+- Loan acceptance: updated worker ledger, including `loan_outstanding_inr`.
+- Scenario update: `status`, `scenario`.
+- Reset: `status`.
+
+DATABASE CHECK: confirm from the backend source whether PostgreSQL is actually used. If the backend does not report `database_connected`, omit the database indicator and omit any wording about state being "persisted". Tell me what you found in your first message.
+
+## Technical requirements
+
+- Build a maintainable Streamlit application with Python.
+- Keep API requests in a small dedicated module such as `frontend/api_client.py`; keep UI code in `frontend/app.py` and use additional small modules only when they improve clarity.
+- Use `requests` with explicit timeouts. Handle non-2xx responses and show the backend's `detail` message verbatim when present.
+- Configure the backend URL through an environment variable such as `FLOWSTATE_API_BASE_URL`, defaulting to `http://127.0.0.1:8000`.
+- Include `frontend/.env.example` with only the API base URL. Never include credentials.
+- Include `frontend/requirements.txt` with pinned versions (streamlit, requests, and anything else you use).
+- Use Streamlit session state for UI state, such as the selected worker, the latest storm result, and an in-progress action guard. Do not treat session state as the source of business data.
+- Fetch current server values after every successful mutation so the dashboard reflects the API state.
+- Avoid stale results when a scenario changes quickly. Use request IDs or another safe mechanism if doing parallel prediction requests.
+- Fetch worker predictions in parallel where appropriate, but handle errors per worker. One failed worker request must not make all other rows unusable.
+- Disable mutating controls while their request is in progress, and also prevent duplicate submissions in code.
+- Give users a visible refresh or retry control. Show a "Last updated" timestamp after successful data loading.
+- Do not change backend CORS settings. If the browser/API environment causes a connectivity issue, report it rather than editing the backend.
+- Add a concise README section with setup, run commands, configuration, and known API limitations.
+
+## Visual direction
+
+Create a professional, polished fintech and climate-protection dashboard suitable for a live judge presentation.
+
+- Use Streamlit's layout, columns, containers, tabs, expanders, status elements, and dialogs where suitable.
+- Create a restrained design with a light neutral background, deep navy text, teal/blue accent, amber warnings, and red only for severe disruption.
+- Use strong spacing and hierarchy; avoid a crowded admin-template appearance.
+- Make important status and rupee figures readable from a projector.
+- Use accessible labels and clear written status text. Never convey a state by color alone.
+- Use `st.dialog` or an equivalent confirmation pattern for consequential actions where supported by the project's Streamlit version.
+- Keep the interface usable on narrower screens.
+- Use an 8px-like spacing rhythm, consistent typography, and consistent cards/status badges.
+- Format INR fields as rupees using a locale-aware formatter. Format only the API-provided value; do not recalculate or change it.
+- Display long addresses and transaction hashes in truncated form with a copy-friendly full value in an expander or detail section.
+- Distinguish `Mock` from `On-chain` with explicit labels, not color alone.
+- Respect reduced-motion preferences if adding animation. Avoid motion that is not needed.
+
+## Page structure
+
+Build one coherent dashboard with these sections:
+
+### 1. Header (P0)
+
+- FlowState name and a short product descriptor.
+- A backend connectivity state based on successful API health loading.
+- A Refresh button.
+- Current scenario based on `/api/health`. If it reports `storm`, show it as a read-only badge ("Storm active"). Do not add a storm selector.
+- Show the last successful refresh time.
+
+### 2. System health strip (P0)
+
+Show separate indicators based on `/api/health`:
+
+- Backend
+- PostgreSQL database (only if the backend reports it; see the DATABASE CHECK)
+- Prediction model
+- Local blockchain
+
+Use the actual response values. For boolean fields show clear labels such as "Connected" / "Unavailable" or "Loaded" / "Not loaded". If a field is absent or unknown, show "Not reported"; never assume it is healthy. A reachable API with `status: degraded` must not be presented as fully healthy.
+
+### 3. Impact summary (P0)
+
+Show only values supported by live API data, for example:
+
+- Worker count from `/api/workers`.
+- Current scenario from `/api/health`.
+- Current weather values from `/api/weather`.
+- Latest storm action summary from the most recent `/api/simulate-storm` response during this UI session, when available.
+- Payout history record count from `/api/payouts`, if useful.
+
+Do not invent historical trends or estimate totals from unsupported data. The backend does not provide a historical payout aggregate endpoint. Do not present a locally calculated all-time payout total as if the API returned it.
+
+### 4. Scenario controls (P0)
+
+- Provide controls for `clear` and `rainy` only.
+- Change the scenario via `POST /api/scenario/{name}`.
+- Display the scenario reported by the backend after the change.
+- Refresh health, weather, and worker predictions after a successful change.
+- Do not add a "storm" scenario selector. Storm payouts use the dedicated simulation action.
+- Provide a Reset demo button that calls `POST /api/reset`.
+- Require explicit confirmation before reset because it clears the demo ledger and payout history.
+- After reset, refresh all data and clear any stale storm-result or loan-success display.
+
+### 5. Worker predictions (P0)
+
+- Load worker identity, addresses, and paid state from `/api/workers`.
+- Fetch each worker's prediction from `/api/predict/{worker_id}`.
+- Display a clear table or cards with worker, predicted income, shortfall, action, reason, prediction source, and payout status.
+- Use the exact backend action to choose the label:
+  - `NONE`: "No immediate support action"
+  - `OFFER_LOAN`: "Loan offer"
+  - `TRIGGER_PAYOUT`: "Payout"
+- Show the API-provided `loan_amount` when the action is `OFFER_LOAN`.
+- Show reasons returned by the API; do not construct new explanations.
+- Show `source` as returned (for example, model or fallback).
+- Include an inline error and per-worker retry if an individual prediction fails.
+
+### 6. Storm payout demo (P0)
+
+- Provide a prominent "Simulate storm payouts" button calling `POST /api/simulate-storm`.
+- Before submission, explain in a confirmation dialog that this demo action may send transactions on the configured local blockchain.
+- Prevent duplicate clicks while it runs.
+- Display the actual response fields: number of payouts, total amount, worker names, individual amounts, transaction hashes, and mock/on-chain status.
+- After success, refresh health, workers, predictions, and payout history.
+- If `payouts_triggered` is zero and there are no payout records in the response, explain that the demo ledger may already have paid eligible workers and point the user to the Reset control.
+- Do not present a mock payout as an on-chain payout.
+
+### 7. Payout history (P0)
+
+- Display records from `GET /api/payouts`, preserving the API-provided newest-first order.
+- Show worker name/ID, amount, mock/on-chain label, and transaction hash.
+- Include clear loading, empty, and error states.
+- Do not invent dates or timestamps; the payout response does not provide them.
+
+### 8. Worker detail (P1)
+
+When a worker is selected (side panel, expander, or dialog that keeps the main dashboard context visible):
+
+- Show identity and address from `/api/workers`.
+- Show current ledger from `/api/worker/{worker_id}`.
+- Show prediction, weather, action, loan amount, reasons, and source from `/api/predict/{worker_id}`.
+- Show `balance_inr`, `vault_inr`, `loan_outstanding_inr`, and `last_payout_tx` when returned.
+- Keep the full address and transaction hash accessible and copyable.
+- Do not imply worker coordinates are in the worker-detail route; if showing coordinates, use `/api/workers`.
+
+### 9. Loan acceptance (P1)
+
+- Show an "Accept loan" action only when the backend prediction action is `OFFER_LOAN`.
+- Show a confirmation step using the API-provided loan amount.
+- Call `POST /api/loan/accept/{worker_id}`.
+- Show the returned updated ledger on success.
+- Refresh affected worker and prediction data.
+- Display backend error details clearly, including duplicate acceptance or ineligible-worker responses.
+
+### 10. Worker map (P1)
+
+- Plot every worker from `/api/workers` (`lat`, `lng`) on a map (st.map, pydeck, or streamlit-folium; choose what works with the pinned Streamlit version).
+- Show paid vs unpaid with BOTH a color and a text label in an adjacent table or tooltip. Never use color alone.
+- After a storm payout, refresh so paid workers change state.
+
+### 11. Worker view (P2)
+
+- A tab styled as a phone-width card for one selected worker.
+- If the API shows `last_payout_tx` is not null for that worker, display "Safety payout received" with the shortened hash and its Mock / On-chain label (taken from `/api/payouts`).
+- If the action is `OFFER_LOAN`, show the loan offer.
+- Everything displayed must come from the API. Never fabricate a notification.
+
+### 12. Auto-refresh (P2)
+
+- An off-by-default toggle "Auto-refresh every 3 seconds" using `st.fragment(run_every=...)` that refreshes health, payout history, and the worker table.
+- Keep the manual Refresh button and the Last updated time.
+
+### 13. Demo guide (P2)
+
+Add an informational, collapsible "Demo guide" listing these steps:
+
+1. Check backend, model, and chain statuses (and database, if reported).
+2. Show the clear scenario and a worker prediction with no action.
+3. Switch to rainy and show backend-computed loan offers.
+4. Accept one eligible loan and show the updated ledger.
+5. Trigger storm payouts and inspect the returned transactions.
+6. Refresh to show scenario, ledger, and payout records as the backend returns them (use the word "persist" only if the backend really persists state).
+7. Reset the demo with confirmation.
+
+The guide is informational only. It must not call APIs or show fake completion state.
+
+## Data and error handling
+
+- On initial backend failure, show a full-page message such as "Cannot reach backend at [configured URL]" and a Retry button.
+- Show skeletons or Streamlit loading indicators during initial fetches.
+- For each API-driven area, show loading, success, empty, and error states as appropriate.
+- Show the backend's `detail` error text verbatim when available; use a generic fallback only if no detail is provided.
+- Announce mutation outcomes visibly, such as via `st.toast`, status messages, or a result panel.
+- Do not crash the entire app because one worker prediction failed.
+- If `/api/weather` returns scenario fallback data, show its returned source rather than implying it is live weather.
+
+## Known API limits to respect
+
+The existing backend does not expose:
+
+- A historical payout sum/aggregate endpoint.
+- Payout timestamps in `/api/payouts`.
+- Temperature or a textual weather description in `/api/weather`.
+- Worker coordinates in `/api/worker/{worker_id}` (though `/api/workers` includes `lat` and `lng`).
+
+Do not fabricate these values. Mention these limitations in the frontend README and final report.
+
+## Demo behavior
+
+The UI must support this live demo flow:
+
+1. Start Hardhat and the backend (and PostgreSQL, if the backend uses it) separately.
+2. Open the Streamlit dashboard and show the actual system indicators.
+3. Show clear scenario data and a worker prediction.
+4. Switch to rainy and show the workers for whom the backend returns `OFFER_LOAN`.
+5. Accept one loan and show the ledger response.
+6. Trigger storm payouts and show actual payout results.
+7. Refresh and show the state the backend returns.
+8. Reset the demo after confirmation.
+
+## Delivery and verification
+
+When finished, report:
+
+- Files created or changed, all inside `frontend/`.
+- Exact commands to install dependencies and run Streamlit on Windows PowerShell.
+- Environment variable setup.
+- API limitations found.
+- Whether the backend uses PostgreSQL, and how the database indicator was handled.
+- Confirmation that no files under `backend/` or `contracts/` were changed.
+- The actual results of dependency installation, Python syntax/quality checks if configured, and any other checks run.
+- Which flows were exercised against a live backend and which were not tested.
+- Do not claim browser, accessibility, or live API verification unless you actually performed it.
+
+Start now: inspect the repository and backend, tell me in 3 lines what you found, then do PHASE F1 only. Then stop and wait for my "go".

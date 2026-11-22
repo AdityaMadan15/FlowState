@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,9 @@ from typing import Any
 import joblib
 import pandas as pd
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 try:  # Support both `uvicorn main:app` from backend/ and `backend.main:app`.
     from .blockchain import chain_connected, trigger_payout
@@ -27,6 +29,8 @@ try:  # Support both `uvicorn main:app` from backend/ and `backend.main:app`.
         record_payout,
         reset_database,
         set_scenario as persist_scenario,
+        register_user, authenticate_user, create_user_session,
+        user_for_session, revoke_user_session,
     )
     from .decision import decide_action
     from .train_model import (
@@ -50,6 +54,8 @@ except ImportError:
         record_payout,
         reset_database,
         set_scenario as persist_scenario,
+        register_user, authenticate_user, create_user_session,
+        user_for_session, revoke_user_session,
     )
     from decision import decide_action
     from train_model import (
@@ -74,6 +80,60 @@ ACTION_LOCK = threading.Lock()
 
 MODEL: Any | None = None
 EXPLAINER: Any | None = None
+
+
+class SignupPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=10, max_length=128)
+
+
+class LoginPayload(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def _bearer_user(authorization: str | None) -> tuple[str, dict[str, Any]]:
+    scheme, _, token = (authorization or "").partition(" ")
+    user = user_for_session(token) if scheme.lower() == "bearer" and token else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Please sign in to continue")
+    return token, user
+
+
+@app.post("/api/auth/signup")
+def auth_signup(payload: SignupPayload) -> dict[str, Any]:
+    email = payload.email.strip().lower()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address")
+    try:
+        user = register_user(payload.name, email, payload.password)
+    except Exception:
+        logger.exception("Account creation failed")
+        raise HTTPException(status_code=503, detail="Account service is temporarily unavailable")
+    if not user:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    return {"token": create_user_session(user["id"]), "user": user}
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginPayload) -> dict[str, Any]:
+    user = authenticate_user(payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Email or password is incorrect")
+    return {"token": create_user_session(user["id"]), "user": user}
+
+
+@app.get("/api/auth/me")
+def auth_me(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    return _bearer_user(authorization)[1]
+
+
+@app.post("/api/auth/logout")
+def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    token, _ = _bearer_user(authorization)
+    revoke_user_session(token)
+    return {"status": "ok"}
 
 
 def load_model_assets() -> None:
