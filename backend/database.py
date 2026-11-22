@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import hashlib
+import secrets
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, delete, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, delete, text, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 try:
@@ -65,6 +67,84 @@ class PayoutRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(String(254), unique=True, index=True, nullable=False)
+    password_salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+def _password_digest(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 310_000).hex()
+
+
+def register_user(name: str, email: str, password: str) -> dict[str, Any] | None:
+    normalized = email.strip().lower()
+    salt = secrets.token_hex(16)
+    with SessionLocal.begin() as session:
+        if session.scalar(select(UserAccount).where(UserAccount.email == normalized)):
+            return None
+        user = UserAccount(name=name.strip(), email=normalized, password_salt=salt,
+                           password_hash=_password_digest(password, salt))
+        session.add(user)
+        session.flush()
+        return {"id": user.id, "name": user.name, "email": user.email}
+
+
+def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
+    with SessionLocal() as session:
+        user = session.scalar(select(UserAccount).where(UserAccount.email == email.strip().lower()))
+        if user is None:
+            return None
+        candidate = _password_digest(password, user.password_salt)
+        if not secrets.compare_digest(candidate, user.password_hash):
+            return None
+        return {"id": user.id, "name": user.name, "email": user.email}
+
+
+def create_user_session(user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with SessionLocal.begin() as session:
+        session.add(UserSession(token_hash=token_hash, user_id=user_id,
+                                expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
+    return token
+
+
+def user_for_session(token: str) -> dict[str, Any] | None:
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with SessionLocal() as session:
+        auth_session = session.get(UserSession, token_hash)
+        if auth_session is None or auth_session.revoked:
+            return None
+        expiry = auth_session.expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            return None
+        user = session.get(UserAccount, auth_session.user_id)
+        return {"id": user.id, "name": user.name, "email": user.email} if user else None
+
+
+def revoke_user_session(token: str) -> None:
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with SessionLocal.begin() as session:
+        auth_session = session.get(UserSession, token_hash)
+        if auth_session:
+            auth_session.revoked = True
 
 
 def initialize_database() -> None:
